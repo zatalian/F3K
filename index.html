@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>F3K Draw Master</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --accent: #3498db;
+            --bg: #f4f7f6;
+        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); color: var(--primary); margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: var(--primary); border-bottom: 2px solid var(--accent); padding-bottom: 10px; }
+        .input-section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; }
+        textarea, input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        textarea { height: 100px; }
+        button { width: 100%; padding: 15px; background: var(--accent); color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; transition: background 0.3s; }
+        button:hover { background: #2980b9; }
+        .draw-results { margin-top: 40px; }
+        .task-card { margin-bottom: 40px; border: 1px solid #eee; padding: 20px; border-radius: 8px; page-break-inside: avoid; }
+        .task-header { background: var(--primary); color: white; padding: 10px; margin: -20px -20px 20px -20px; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background-color: #f8f9fa; }
+        tr:nth-child(even) { background-color: #fcfcfc; }
+        @media print {
+            .input-section, button, h1, .instructions { display: none; }
+            body { background: white; padding: 0; }
+            .container { box-shadow: none; max-width: 100%; }
+            .task-card { border: 2px solid black; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>F3K Draw Manager</h1>
+    
+    <div class="input-section">
+        <div>
+            <label>Pilots (one per line):</label>
+            <textarea id="pilots">Pilot A&#10;Pilot B&#10;Pilot C&#10;Pilot D&#10;Pilot E&#10;Pilot F&#10;Pilot G&#10;Pilot H&#10;Pilot I</textarea>
+        </div>
+        <div>
+            <label>Available Tasks (one per line):</label>
+            <textarea id="tasks">Task A (Last 5:00)&#10;Task B (Last 2)&#10;Task C (All up)&#10;Task D (Ladder)&#10;Task G (Best 5)&#10;Task H (1,2,3,4)&#10;Task J (Last 3)&#10;Task K (Big Ladder)</textarea>
+        </div>
+        <div>
+            <label>Number of Rounds:</label>
+            <input type="number" id="numRounds" value="4">
+        </div>
+        <div>
+            <label>Groups per Round:</label>
+            <input type="number" id="numGroups" value="3">
+        </div>
+    </div>
+
+    <button onclick="generateDraw()">Generate & Randomize Draw</button>
+
+    <div id="drawOutput" class="draw-results"></div>
+</div>
+
+<script>
+    function shuffle(array) {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+    }
+
+    function generateDraw() {
+        const pilotList = document.getElementById('pilots').value.split('\n').filter(n => n.trim() !== '');
+        const taskList = document.getElementById('tasks').value.split('\n').filter(n => n.trim() !== '');
+        const rounds = parseInt(document.getElementById('numRounds').value);
+        const groupsPerRound = parseInt(document.getElementById('numGroups').value);
+
+        if (pilotList.length < groupsPerRound * 2) {
+            alert("Need more pilots to sustain this many groups with timers!");
+            return;
+        }
+
+        // 1. Draw Unique Tasks
+        let selectedTasks = shuffle([...taskList]).slice(0, rounds);
+        
+        let outputHtml = '';
+        let currentPilots = [...pilotList];
+
+        // 2. Generate Rounds
+        for (let r = 0; r < rounds; r++) {
+            // Shuffle pilots for each round to maximize variety
+            shuffle(currentPilots);
+            
+            let groups = Array.from({ length: groupsPerRound }, () => []);
+            
+            // Distribute pilots into groups
+            currentPilots.forEach((pilot, index) => {
+                groups[index % groupsPerRound].push(pilot);
+            });
+
+            outputHtml += `
+                <div class="task-card">
+                    <div class="task-header">
+                        <span>Round ${r + 1}</span>
+                        <span>${selectedTasks[r] || 'F3K Task'}</span>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Group</th>
+                                th>Pilot</th>
+                                <th>Timer (from other group)</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+
+            groups.forEach((group, gIdx) => {
+                group.forEach((pilot, pIdx) => {
+                    // Timer logic: Pick a pilot from the NEXT group (circular)
+                    // We add a 'shift' based on the round number to ensure different timers
+                    let timerGroupIdx = (gIdx + 1) % groupsPerRound;
+                    let timerGroup = groups[timerGroupIdx];
+                    let timer = timerGroup[(pIdx + r) % timerGroup.length];
+
+                    outputHtml += `
+                        <tr>
+                            <td>Group ${gIdx + 1}</td>
+                            <td><strong>${pilot}</strong></td>
+                            <td>${timer}</td>
+                        </tr>`;
+                });
+            });
+
+            outputHtml += `</tbody></table></div>`;
+        }
+
+        document.getElementById('drawOutput').innerHTML = `
+            <button onclick="window.print()" style="margin-bottom:20px; background:#27ae60;">Print Draw to PDF</button>
+            ${outputHtml}
+        `;
+    }
+</script>
+
+</body>
+</html>
