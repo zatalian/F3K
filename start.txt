@@ -1,0 +1,27 @@
+ok. I want a draw for a F3K competition. Start from the following inputs: 
+
+1. list of pilots
+
+2. list of tasks
+
+3. number of tasks
+
+4. number of groups
+
+
+
+
+
+* start with drawing "number of tasks" from the list of tasks. This should be random, but you can't draw the same task twice 
+* next the tasks are flown in the order they where drawn. Create "number of groups" for each task
+* assign the pilots to the groups. To assign the pilots it is important that:
+a. they are assigned randomly
+b. each groups has the same amount of pilots
+c. all pilots fly against all other pilots
+d. all pilots fly in all groups
+* assign a timer to each pilot. To assign the timers it is important that:
+a. the timers does not fly in the same group
+b. each timer has to time an new pilot in the next task
+
+
+
