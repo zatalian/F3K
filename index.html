@@ -195,58 +195,51 @@ Task N (Best flight)</textarea>
         return bestGroups;
     }
 
-    // ── Timer Assignment (cross-group, rotating) ─────────────────────────
-    function assignTimers(groups, round, previousTimerMap) {
-        // previousTimerMap: { pilotName: Set<timerNames> }
-        const numGroups = groups.length;
-        const assignments = []; // { group, pilot, timer }
-
-        // Build a set of pilots per group for quick lookup
+    // ── Timer Assignment (mutual cross-group pairs, rotating) ──────────
+    function assignTimers(groups, round, previousPairs) {
+        // previousPairs: Set of "A|B" keys (undirected) – tracks pair history across rounds
         const pilotToGroup = {};
         groups.forEach((g, gIdx) => g.forEach(p => { pilotToGroup[p] = gIdx; }));
 
-        // For each group, assign timers from other groups
-        const globalUsedTimers = new Set();
+        const allPilots = groups.flat();
+        const paired = new Set();
+        const pairs = [];
 
-        for (let gIdx = 0; gIdx < numGroups; gIdx++) {
-            const group = groups[gIdx];
+        function pairKey(a, b) { return [a, b].sort().join('|'); }
 
-            // Collect candidate timers: pilots from ALL other groups (shuffled for variety)
-            let candidateTimers = [];
-            for (let otherIdx = 0; otherIdx < numGroups; otherIdx++) {
-                if (otherIdx !== gIdx) {
-                    candidateTimers.push(...groups[otherIdx]);
-                }
-            }
-            candidateTimers = shuffle(candidateTimers);
+        // Shuffle for randomness
+        const shuffled = shuffle(allPilots);
 
-            // Sort candidates: prefer those not used as timers yet globally,
-            // and not previously assigned to this pilot
-            for (const pilot of group) {
-                const prevTimers = previousTimerMap[pilot] || new Set();
+        for (const pilot of shuffled) {
+            if (paired.has(pilot)) continue;
 
-                // Rank candidates
-                const available = candidateTimers.filter(t => !globalUsedTimers.has(t));
-                const preferred = available.filter(t => !prevTimers.has(t));
+            // Cross-group, unpaired candidates
+            const candidates = shuffled.filter(t =>
+                !paired.has(t) && t !== pilot && pilotToGroup[t] !== pilotToGroup[pilot]
+            );
 
-                let timer;
-                if (preferred.length > 0) {
-                    // Pick from preferred (not used globally, not used previously for this pilot)
-                    timer = preferred[0];
-                } else if (available.length > 0) {
-                    // At least not used globally this round
-                    timer = available[0];
-                } else {
-                    // Fallback: allow reuse of global timers
-                    const fallback = candidateTimers.filter(t => !prevTimers.has(t));
-                    timer = fallback.length > 0 ? fallback[0] : candidateTimers[0];
-                }
+            // Prefer candidates not yet paired with this pilot in any previous round
+            const preferred = candidates.filter(t => !previousPairs.has(pairKey(pilot, t)));
 
-                globalUsedTimers.add(timer);
-                if (!previousTimerMap[pilot]) previousTimerMap[pilot] = new Set();
-                previousTimerMap[pilot].add(timer);
+            const partner = preferred[0] || candidates[0] || null;
+            if (!partner) continue;
 
-                assignments.push({ group: gIdx, pilot, timer });
+            paired.add(pilot);
+            paired.add(partner);
+            pairs.push([pilot, partner]);
+            previousPairs.add(pairKey(pilot, partner));
+        }
+
+        // Build assignments: each pair times each other
+        const assignments = [];
+        for (const [a, b] of pairs) {
+            assignments.push({ group: pilotToGroup[a], pilot: a, timer: b });
+            assignments.push({ group: pilotToGroup[b], pilot: b, timer: a });
+        }
+        // Unpaired pilot (odd count) gets empty timer
+        for (const pilot of allPilots) {
+            if (!paired.has(pilot)) {
+                assignments.push({ group: pilotToGroup[pilot], pilot, timer: '' });
             }
         }
 
@@ -286,7 +279,24 @@ Task N (Best flight)</textarea>
 
         const encounters = Object.values(encounterCounts);
         const maxEncounters = encounters.length > 0 ? Math.max(...encounters) : 0;
-        const repeatEncounters = encounters.filter(e => e > 1).length;
+
+        // Timer pair stats (undirected: A↔B counts once per round)
+        const timerPairCounts = {};
+        let totalNeededPairs = 0;
+        for (const round of allRounds) {
+            // Deduplicate mutual pairs within each round
+            const roundPairs = new Set();
+            for (const row of round) {
+                if (!row.timer) continue;
+                roundPairs.add([row.pilot, row.timer].sort().join('|'));
+            }
+            totalNeededPairs += roundPairs.size;
+            for (const key of roundPairs) {
+                timerPairCounts[key] = (timerPairCounts[key] || 0) + 1;
+            }
+        }
+        const totalPossiblePairs = pilots.length * (pilots.length - 1) / 2;
+        const repeatedPairs = Object.values(timerPairCounts).filter(c => c > 1).length;
 
         // Group distribution: how evenly are pilots spread across groups?
         let minGroupVisits = Infinity, maxGroupVisits = 0;
@@ -300,7 +310,7 @@ Task N (Best flight)</textarea>
         const timerRotation = pilots.map(p => timerCounts[p].size);
         const minTimerVariety = Math.min(...timerRotation);
 
-        return { maxEncounters, repeatEncounters, minGroupVisits, maxGroupVisits, minTimerVariety, totalPairs: encounters.length };
+        return { maxEncounters, totalPossiblePairs, totalNeededPairs, repeatedPairs, minGroupVisits, maxGroupVisits, minTimerVariety };
     }
 
     // ── CSV Export ────────────────────────────────────────────────────────
@@ -351,12 +361,36 @@ Task N (Best flight)</textarea>
     }
 
     function buildRoundsFromGroups(groupsPerRound) {
-        const previousTimerMap = {};
-        const allRounds = [];
-        for (let r = 0; r < groupsPerRound.length; r++) {
-            allRounds.push(assignTimers(groupsPerRound[r], r, previousTimerMap));
+        const attempts = 500;
+        let bestRounds = null;
+        let bestRepeats = Infinity;
+
+        for (let t = 0; t < attempts; t++) {
+            const previousPairs = new Set();
+            const allRounds = [];
+            for (let r = 0; r < groupsPerRound.length; r++) {
+                allRounds.push(assignTimers(groupsPerRound[r], r, previousPairs));
+            }
+            // Count repeated pairs
+            const pairCounts = {};
+            for (const round of allRounds) {
+                const roundPairs = new Set();
+                for (const row of round) {
+                    if (!row.timer) continue;
+                    roundPairs.add([row.pilot, row.timer].sort().join('|'));
+                }
+                for (const key of roundPairs) {
+                    pairCounts[key] = (pairCounts[key] || 0) + 1;
+                }
+            }
+            const repeats = Object.values(pairCounts).filter(c => c > 1).length;
+            if (repeats < bestRepeats) {
+                bestRepeats = repeats;
+                bestRounds = allRounds;
+                if (repeats === 0) break;
+            }
         }
-        return allRounds;
+        return bestRounds;
     }
 
     function renderCurrentDraw() {
@@ -490,9 +524,8 @@ Task N (Best flight)</textarea>
         <div class="stats">
             <h3>Draw Quality</h3>
             <div class="stats-grid">
-                <div class="stat-item"><span>Total pilot pairs</span><span>${stats.totalPairs}</span></div>
+                <div class="stat-item"><span>Pairs (possible / needed / repeated)</span><span>${stats.totalPossiblePairs} / ${stats.totalNeededPairs} / ${stats.repeatedPairs}</span></div>
                 <div class="stat-item"><span>Max times same opponents</span><span>${stats.maxEncounters}</span></div>
-                <div class="stat-item"><span>Repeated pairings</span><span>${stats.repeatEncounters}</span></div>
                 <div class="stat-item"><span>Group visits (min–max)</span><span>${stats.minGroupVisits}–${stats.maxGroupVisits}</span></div>
                 <div class="stat-item"><span>Min unique timers per pilot</span><span>${stats.minTimerVariety}</span></div>
             </div>
