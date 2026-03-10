@@ -113,9 +113,9 @@ Task N (Best flight)</textarea>
     <div class="action-bar">
         <button class="btn btn-import" onclick="importDraw()">Import Draw</button>
         <button class="btn btn-primary" onclick="generateAll()">Generate All</button>
-        <button class="btn btn-tasks" onclick="generateTasks()">Generate Tasks</button>
-        <button class="btn btn-pilots" onclick="generatePilotsAndTimers()">Generate Pilots &amp; Timers</button>
-        <button class="btn btn-timers" onclick="generateTimersOnly()">Generate Timers</button>
+        <button class="btn btn-tasks" onclick="generateTasks()">Reassign Tasks</button>
+        <button class="btn btn-pilots" onclick="generatePilotsAndTimers()">Reassign Pilots &amp; Timers</button>
+        <button class="btn btn-timers" onclick="generateTimersOnly()">Reassign Timers</button>
     </div>
 
     <div id="drawOutput" class="draw-results"></div>
@@ -282,36 +282,51 @@ Task N (Best flight)</textarea>
         }
 
         // Backtracking search for maximum matching with minimum repeated pairs
-        // Order pilots by fewest cross-group options first (most-constrained-first)
-        const sortedPilots = [...allPilots].sort((a, b) =>
+        // Shuffle first for randomness, then stable-sort by constraint count
+        // This randomizes among equally-constrained pilots
+        const sortedPilots = shuffle(allPilots).sort((a, b) =>
             crossGroupPartners[a].length - crossGroupPartners[b].length
         );
 
         const maxPairs = Math.floor(allPilots.length / 2);
         let bestPairs = null;
+        let bestPairCount = -1;
         let bestRepeats = Infinity;
         let nodes = 0;
         const nodeLimit = 100000;
 
+        function isBetter(pairCount, repeats) {
+            // Priority: maximize pairs first, then minimize repeats
+            if (pairCount > bestPairCount) return true;
+            if (pairCount === bestPairCount && repeats < bestRepeats) return true;
+            return false;
+        }
+
         function backtrack(idx, paired, pairs, repeats) {
             if (nodes++ > nodeLimit) return;
-            // Prune: can't beat current best
-            if (repeats >= bestRepeats) return;
 
             // Skip already-paired pilots
             while (idx < sortedPilots.length && paired.has(sortedPilots[idx])) idx++;
 
             if (idx >= sortedPilots.length) {
-                if (pairs.length > (bestPairs ? bestPairs.length : -1) ||
-                    (pairs.length === (bestPairs ? bestPairs.length : -1) && repeats < bestRepeats)) {
+                if (isBetter(pairs.length, repeats)) {
                     bestPairs = [...pairs];
+                    bestPairCount = pairs.length;
                     bestRepeats = repeats;
                 }
                 return;
             }
 
+            // Prune: even pairing all remaining pilots can't beat current best pair count,
+            // or we already have max pairs and can't improve repeats
+            const remaining = sortedPilots.length - idx;
+            const maxAdditionalPairs = Math.floor(remaining / 2);
+            if (pairs.length + maxAdditionalPairs < bestPairCount) return;
+            if (pairs.length + maxAdditionalPairs === bestPairCount && repeats >= bestRepeats) return;
+            if (bestPairCount === maxPairs && repeats >= bestRepeats) return;
+
             const pilot = sortedPilots[idx];
-            const candidates = crossGroupPartners[pilot].filter(t => !paired.has(t));
+            const candidates = shuffle(crossGroupPartners[pilot].filter(t => !paired.has(t)));
 
             // Sort candidates: prefer new pairs, then most-constrained partner
             candidates.sort((a, b) => {
@@ -336,7 +351,7 @@ Task N (Best flight)</textarea>
                 paired.delete(partner);
 
                 // Stop if we found a perfect solution
-                if (bestRepeats === 0 && bestPairs && bestPairs.length === maxPairs) return;
+                if (bestRepeats === 0 && bestPairCount === maxPairs) return;
                 if (nodes > nodeLimit) return;
             }
 
@@ -613,12 +628,22 @@ Task N (Best flight)</textarea>
 
     function generateTimersOnly() {
         const inputs = readInputs();
-        if (!lastDrawData || !lastDrawData.groupsPerRound) {
+        if (!lastDrawData || !lastDrawData.groupsPerRound || !lastDrawData.allRounds) {
             alert('Generate pilots first (use "Generate All" or "Generate Pilots & Timers").');
             return;
         }
 
-        const allRounds = buildRoundsFromGroups(lastDrawData.groupsPerRound);
+        const newRounds = buildRoundsFromGroups(lastDrawData.groupsPerRound);
+
+        // Keep existing pilot order, only update the timer column
+        const allRounds = lastDrawData.allRounds.map((oldRound, rIdx) => {
+            const timerLookup = {};
+            for (const row of newRounds[rIdx]) {
+                timerLookup[row.pilot] = row.timer;
+            }
+            return oldRound.map(row => ({ ...row, timer: timerLookup[row.pilot] || '' }));
+        });
+
         lastDrawData = { ...lastDrawData, allRounds };
         renderCurrentDraw();
     }
