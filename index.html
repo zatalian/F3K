@@ -647,13 +647,45 @@ Task N (Best flight)</textarea>
         return true;
     }
 
-    function buildRoundsFromGroups(groupsPerRound) {
-        const previousPairs = new Set();
-        const allRounds = [];
-        for (let r = 0; r < groupsPerRound.length; r++) {
-            allRounds.push(assignTimers(groupsPerRound[r], r, previousPairs, pilotTags));
+    function countSameTagPairs(allRounds) {
+        if (pilotTags.size === 0) return 0;
+        let count = 0;
+        for (const round of allRounds) {
+            const seen = new Set();
+            for (const row of round) {
+                if (!row.timer) continue;
+                const key = [row.pilot, row.timer].sort().join('|');
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const pTags = pilotTags.get(row.pilot);
+                const tTags = pilotTags.get(row.timer);
+                if (pTags && tTags) {
+                    for (const t of pTags) { if (tTags.has(t)) { count++; break; } }
+                }
+            }
         }
-        return allRounds;
+        return count;
+    }
+
+    function buildRoundsFromGroups(groupsPerRound) {
+        const attempts = pilotTags.size > 0 ? 100 : 1;
+        let bestRounds = null;
+        let bestSameTag = Infinity;
+        for (let a = 0; a < attempts; a++) {
+            const previousPairs = new Set();
+            const allRounds = [];
+            for (let r = 0; r < groupsPerRound.length; r++) {
+                allRounds.push(assignTimers(groupsPerRound[r], r, previousPairs, pilotTags));
+            }
+            if (pilotTags.size === 0) return allRounds;
+            const sameTag = countSameTagPairs(allRounds);
+            if (sameTag < bestSameTag) {
+                bestSameTag = sameTag;
+                bestRounds = allRounds;
+                if (sameTag === 0) break;
+            }
+        }
+        return bestRounds;
     }
 
     function renderCurrentDraw() {
