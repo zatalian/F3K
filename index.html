@@ -768,32 +768,7 @@ Task N (Best flight)</textarea>
                 <button class="btn btn-secondary" onclick="downloadCSV(lastDrawData.allRounds, lastDrawData.selectedTasks)">Download CSV</button>
             </div>`;
 
-        allRounds.forEach((round, rIdx) => {
-            html += `
-            <div class="task-card">
-                <div class="task-header">
-                    <span>Round ${rIdx + 1}</span>
-                    <span class="task-name">${selectedTasks[rIdx]}</span>
-                </div>
-                <table>
-                    <thead>
-                        <tr><th>Group</th><th>Pilot</th><th>Timer</th></tr>
-                    </thead>
-                    <tbody>`;
-
-            // Sort by group for display
-            const sorted = [...round].sort((a, b) => a.group - b.group);
-            let prevGroup = -1;
-            for (const row of sorted) {
-                const groupLabel = row.group !== prevGroup ? `<span class="group-label">Group ${row.group + 1}</span>` : '';
-                prevGroup = row.group;
-                html += `<tr><td>${groupLabel}</td><td><strong>${row.pilot}</strong></td><td>${row.timer}</td></tr>`;
-            }
-
-            html += `</tbody></table></div>`;
-        });
-
-        // Stats section
+        // Stats section (shown before rounds so it's visible without scrolling)
         const barColor = stats.qualityPct >= 80 ? '#27ae60' : stats.qualityPct >= 50 ? '#e67e22' : '#e74c3c';
         html += `
         <div class="stats">
@@ -820,6 +795,44 @@ Task N (Best flight)</textarea>
                 ${pilotTags.size > 0 ? `<div class="stat-item"><span>Same-tag timer pairings</span><span>${stats.sameTagTimerPairs}</span></div>` : ''}
             </div>
         </div>`;
+
+        allRounds.forEach((round, rIdx) => {
+            html += `
+            <div class="task-card">
+                <div class="task-header">
+                    <span>Round ${rIdx + 1}</span>
+                    <span class="task-name">${selectedTasks[rIdx]}</span>
+                </div>
+                <table>`;
+
+            // Sort by group for display
+            const sorted = [...round].sort((a, b) => a.group - b.group);
+
+            if (numGroups === 2) {
+                // Two-group layout: show Group 1 and Group 2 side by side
+                html += `<thead><tr><th>Group 1</th><th>Group 2</th></tr></thead><tbody>`;
+                const g0 = sorted.filter(r => r.group === 0);
+                const g1timered = new Set(g0.map(r => r.timer).filter(Boolean));
+                const g1unpaired = sorted.filter(r => r.group === 1 && !g1timered.has(r.pilot));
+                for (const row of g0) {
+                    html += `<tr><td><strong>${row.pilot}</strong></td><td>${row.timer}</td></tr>`;
+                }
+                for (const row of g1unpaired) {
+                    html += `<tr><td></td><td>${row.pilot}</td></tr>`;
+                }
+            } else {
+                // Multi-group layout: Group | Pilot | Timer
+                html += `<thead><tr><th>Group</th><th>Pilot</th><th>Timer</th></tr></thead><tbody>`;
+                let prevGroup = -1;
+                for (const row of sorted) {
+                    const groupLabel = row.group !== prevGroup ? `<span class="group-label">Group ${row.group + 1}</span>` : '';
+                    prevGroup = row.group;
+                    html += `<tr><td>${groupLabel}</td><td><strong>${row.pilot}</strong></td><td>${row.timer}</td></tr>`;
+                }
+            }
+
+            html += `</tbody></table></div>`;
+        });
 
         document.getElementById('drawOutput').innerHTML = html;
     }
