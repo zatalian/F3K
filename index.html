@@ -73,16 +73,16 @@
 
     <div class="input-section">
         <div>
-            <label for="pilots">Pilots (one per line):</label>
-            <textarea id="pilots">Pilot A
-Pilot B
+            <label for="pilots">Pilots (one per line, optional avoid-tag: name; number):</label>
+            <textarea id="pilots">Pilot A; 1
+Pilot B; 1, 3
 Pilot C
 Pilot D
 Pilot E
 Pilot F
-Pilot G
-Pilot H
-Pilot I</textarea>
+Pilot G; 3
+Pilot H; 2
+Pilot I; 2</textarea>
         </div>
         <div>
             <label for="tasks">Available Tasks (one per line):</label>
@@ -269,7 +269,7 @@ Task N (Best flight)</textarea>
     }
 
     // ── Timer Assignment (backtracking with most-constrained-first) ─────
-    function assignTimers(groups, round, previousPairs) {
+    function assignTimers(groups, round, previousPairs, tags) {
         const pilotToGroup = {};
         groups.forEach((g, gIdx) => g.forEach(p => { pilotToGroup[p] = gIdx; }));
 
@@ -293,27 +293,37 @@ Task N (Best flight)</textarea>
         let bestPairs = null;
         let bestPairCount = -1;
         let bestRepeats = Infinity;
+        let bestSameTagPairs = Infinity;
         let nodes = 0;
         const nodeLimit = 100000;
 
-        function isBetter(pairCount, repeats) {
-            // Priority: maximize pairs first, then minimize repeats
-            if (pairCount > bestPairCount) return true;
-            if (pairCount === bestPairCount && repeats < bestRepeats) return true;
+        function isSameTag(a, b) {
+            const tA = tags.get(a), tB = tags.get(b);
+            if (!tA || !tB) return false;
+            for (const t of tA) { if (tB.has(t)) return true; }
             return false;
         }
 
-        function backtrack(idx, paired, pairs, repeats) {
+        function isBetter(pairCount, repeats, sameTagCount) {
+            // Priority: maximize pairs, then minimize repeats, then minimize same-tag pairs
+            if (pairCount > bestPairCount) return true;
+            if (pairCount === bestPairCount && repeats < bestRepeats) return true;
+            if (pairCount === bestPairCount && repeats === bestRepeats && sameTagCount < bestSameTagPairs) return true;
+            return false;
+        }
+
+        function backtrack(idx, paired, pairs, repeats, sameTagCount) {
             if (nodes++ > nodeLimit) return;
 
             // Skip already-paired pilots
             while (idx < sortedPilots.length && paired.has(sortedPilots[idx])) idx++;
 
             if (idx >= sortedPilots.length) {
-                if (isBetter(pairs.length, repeats)) {
+                if (isBetter(pairs.length, repeats, sameTagCount)) {
                     bestPairs = [...pairs];
                     bestPairCount = pairs.length;
                     bestRepeats = repeats;
+                    bestSameTagPairs = sameTagCount;
                 }
                 return;
             }
@@ -329,38 +339,42 @@ Task N (Best flight)</textarea>
             const pilot = sortedPilots[idx];
             const candidates = shuffle(crossGroupPartners[pilot].filter(t => !paired.has(t)));
 
-            // Sort candidates: prefer new pairs, then most-constrained partner
+            // Sort candidates: prefer new pairs, then different-tag partners, then most-constrained
             candidates.sort((a, b) => {
                 const aRepeat = previousPairs.has(pairKey(pilot, a)) ? 1 : 0;
                 const bRepeat = previousPairs.has(pairKey(pilot, b)) ? 1 : 0;
                 if (aRepeat !== bRepeat) return aRepeat - bRepeat;
+                const aSame = isSameTag(pilot, a) ? 1 : 0;
+                const bSame = isSameTag(pilot, b) ? 1 : 0;
+                if (aSame !== bSame) return aSame - bSame;
                 return crossGroupPartners[a].length - crossGroupPartners[b].length;
             });
 
             for (const partner of candidates) {
                 const key = pairKey(pilot, partner);
                 const isRepeat = previousPairs.has(key) ? 1 : 0;
+                const isSameTagPair = isSameTag(pilot, partner) ? 1 : 0;
 
                 paired.add(pilot);
                 paired.add(partner);
                 pairs.push([pilot, partner]);
 
-                backtrack(idx + 1, paired, pairs, repeats + isRepeat);
+                backtrack(idx + 1, paired, pairs, repeats + isRepeat, sameTagCount + isSameTagPair);
 
                 pairs.pop();
                 paired.delete(pilot);
                 paired.delete(partner);
 
                 // Stop if we found a perfect solution
-                if (bestRepeats === 0 && bestPairCount === maxPairs) return;
+                if (bestRepeats === 0 && bestPairCount === maxPairs && bestSameTagPairs === 0) return;
                 if (nodes > nodeLimit) return;
             }
 
             // Also try leaving this pilot unpaired (may allow better pairings for others)
-            backtrack(idx + 1, paired, pairs, repeats);
+            backtrack(idx + 1, paired, pairs, repeats, sameTagCount);
         }
 
-        backtrack(0, new Set(), [], 0);
+        backtrack(0, new Set(), [], 0, 0);
 
         // Update previousPairs with chosen pairs
         const pairs = bestPairs || [];
@@ -480,7 +494,26 @@ Task N (Best flight)</textarea>
         // Weighted average (encounters 40%, group balance 30%, timers 30%)
         const qualityPct = Math.round((encounterScore * 0.4 + groupScore * 0.3 + timerScore * 0.3) * 100);
 
-        return { maxEncounters, totalPossiblePairs, totalNeededPairs, repeatedPairs, minGroupVisits, maxGroupVisits, minTimerVariety, qualityPct, encounterScore, groupScore, timerScore };
+        // Same-tag timer pairs (only relevant when tags are used)
+        let sameTagTimerPairs = 0;
+        if (pilotTags.size > 0) {
+            for (const round of allRounds) {
+                const roundPairs = new Set();
+                for (const row of round) {
+                    if (!row.timer) continue;
+                    const key = [row.pilot, row.timer].sort().join('|');
+                    if (roundPairs.has(key)) continue;
+                    roundPairs.add(key);
+                    const pTags = pilotTags.get(row.pilot);
+                    const tTags = pilotTags.get(row.timer);
+                    if (pTags && tTags) {
+                        for (const t of pTags) { if (tTags.has(t)) { sameTagTimerPairs++; break; } }
+                    }
+                }
+            }
+        }
+
+        return { maxEncounters, totalPossiblePairs, totalNeededPairs, repeatedPairs, minGroupVisits, maxGroupVisits, minTimerVariety, qualityPct, encounterScore, groupScore, timerScore, sameTagTimerPairs };
     }
 
     // ── CSV Export ────────────────────────────────────────────────────────
@@ -572,11 +605,26 @@ Task N (Best flight)</textarea>
 
     // ── State ────────────────────────────────────────────────────────────
     let lastDrawData = null;   // { allRounds, selectedTasks, groupsPerRound }
+    let pilotTags = new Map();  // pilot name → Set of tag numbers (pilots sharing any tag should avoid being timer partners)
     // groupsPerRound[r] = array of groups (each group is an array of pilot names)
 
     // ── Input helpers ─────────────────────────────────────────────────────
     function readInputs() {
-        const pilots = document.getElementById('pilots').value.split('\n').map(s => s.trim()).filter(Boolean);
+        const rawLines = document.getElementById('pilots').value.split('\n').map(s => s.trim()).filter(Boolean);
+        pilotTags = new Map();
+        const pilots = rawLines.map(line => {
+            const idx = line.lastIndexOf(';');
+            if (idx !== -1) {
+                const name = line.substring(0, idx).trim();
+                const tagStrs = line.substring(idx + 1).split(',').map(s => s.trim());
+                const tags = tagStrs.map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+                if (name && tags.length > 0) {
+                    pilotTags.set(name, new Set(tags));
+                    return name;
+                }
+            }
+            return line;
+        });
         const taskList = document.getElementById('tasks').value.split('\n').map(s => s.trim()).filter(Boolean);
         const numTasks = parseInt(document.getElementById('numTasks').value);
         const numGroups = parseInt(document.getElementById('numGroups').value);
@@ -603,7 +651,7 @@ Task N (Best flight)</textarea>
         const previousPairs = new Set();
         const allRounds = [];
         for (let r = 0; r < groupsPerRound.length; r++) {
-            allRounds.push(assignTimers(groupsPerRound[r], r, previousPairs));
+            allRounds.push(assignTimers(groupsPerRound[r], r, previousPairs, pilotTags));
         }
         return allRounds;
     }
@@ -769,6 +817,7 @@ Task N (Best flight)</textarea>
                 <div class="stat-item"><span>Max times same opponents</span><span>${stats.maxEncounters}</span></div>
                 <div class="stat-item"><span>Group visits (min–max)</span><span>${stats.minGroupVisits}–${stats.maxGroupVisits}</span></div>
                 <div class="stat-item"><span>Min unique timers per pilot</span><span>${stats.minTimerVariety}</span></div>
+                ${pilotTags.size > 0 ? `<div class="stat-item"><span>Same-tag timer pairings</span><span>${stats.sameTagTimerPairs}</span></div>` : ''}
             </div>
         </div>`;
 
