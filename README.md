@@ -27,6 +27,7 @@ After pilots are assigned to groups, each pilot is paired with a timer. Constrai
 - **Cross-group only**: A timer must be from a different group than the pilot they are timing. This ensures timers have no conflict of interest.
 - **Mutual pairing**: Timers are assigned in pairs — if Pilot A times Pilot B, then Pilot B also times Pilot A.
 - **Minimize repeated timer pairs**: The algorithm tracks all previous timer pairings and prefers partners that haven't been paired before. Multiple attempts are made to minimize the number of repeated pairs across the entire draw.
+- **Avoid-tag groups (soft constraint)**: Pilots can be tagged with one or more group numbers using a semicolon after their name (e.g., `Pilot B; 1` or `Pilot C; 1, 3`). Pilots sharing any tag are preferably **not** paired as each other's timer. This is useful for separating top-level pilots, beginners, or pilots who shouldn't work together. The constraint is soft — if no better option exists, same-tag pairings are still allowed.
 - **Odd pilot count**: If there is an odd number of pilots, one pilot per round will have no timer assigned.
 
 ## Draw Quality Statistics
@@ -39,10 +40,29 @@ After generating a draw, the following quality metrics are displayed:
 | **Max times same opponents** | The highest number of times any two pilots were placed in the same group. Lower is better. |
 | **Group visits (min–max)** | Across all pilots, the minimum and maximum number of times any pilot visited a single group. Closer values mean more even rotation. |
 | **Min unique timers per pilot** | The fewest distinct timer partners any single pilot had across all rounds. Higher means better timer variety. |
+| **Same-tag timer pairings** | Number of timer pairs where both pilots share an avoid-tag. Only shown when tags are used. Lower is better (0 = constraint fully satisfied). |
 
 ## Usage
 
 Open `index.html` in a browser. No build step, dependencies, or server required.
+
+### Pilot Input Format
+
+Enter one pilot per line. Optionally append avoid-tags after a semicolon:
+
+```
+Pilot A
+Pilot B; 1
+Pilot C; 1, 3
+Pilot D; 2, 3
+Pilot E; 2
+```
+
+- `; 1` — assigns tag 1 (e.g., top pilots who shouldn't time each other)
+- `; 1, 3` — assigns multiple tags (pilot avoids pairing with anyone sharing tag 1 **or** tag 3)
+- No semicolon — no avoid-tag constraint
+
+### Buttons
 
 - **Generate All** — draw tasks, assign pilots to groups, and assign timers.
 - **Generate Tasks** — re-draw only the tasks, keeping existing pilot/timer assignments if the round count matches.
