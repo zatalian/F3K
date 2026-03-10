@@ -49,6 +49,13 @@
         .stats h3 { margin-top: 0; }
         .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 14px; }
         .stat-item { display: flex; justify-content: space-between; padding: 4px 8px; background: white; border-radius: 4px; }
+        .quality-bar { margin-bottom: 12px; }
+        .quality-bar-label { display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 4px; }
+        .quality-bar-track { height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden; }
+        .quality-bar-fill { height: 100%; border-radius: 10px; transition: width 0.4s; }
+        .quality-breakdown { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px; font-size: 13px; }
+        .quality-sub { text-align: center; padding: 6px; background: white; border-radius: 4px; }
+        .quality-sub-label { font-size: 11px; color: #666; }
 
         @media print {
             .input-section, .action-bar, h1, .export-bar { display: none; }
@@ -133,7 +140,7 @@ Task N (Best flight)</textarea>
         return shuffle(taskList).slice(0, count);
     }
 
-    // ── Pilot Assignment (minimize repeat encounters) ────────────────────
+    // ── Pilot Assignment (minimize repeat encounters + balance group visits) ─
     function createEncounterMatrix(pilots) {
         const matrix = {};
         for (const p of pilots) {
@@ -143,6 +150,14 @@ Task N (Best flight)</textarea>
             }
         }
         return matrix;
+    }
+
+    function createGroupVisitCounts(pilots, numGroups) {
+        const counts = {};
+        for (const p of pilots) {
+            counts[p] = new Array(numGroups).fill(0);
+        }
+        return counts;
     }
 
     function updateEncounterMatrix(matrix, groups) {
@@ -156,16 +171,38 @@ Task N (Best flight)</textarea>
         }
     }
 
-    function scoreAssignment(groups, encounterMatrix) {
-        let score = 0;
+    function updateGroupVisitCounts(visitCounts, groups) {
+        groups.forEach((group, gIdx) => {
+            for (const p of group) {
+                visitCounts[p][gIdx]++;
+            }
+        });
+    }
+
+    function scoreAssignment(groups, encounterMatrix, visitCounts) {
+        // Encounter score: sum of previous encounters for all pairs within each group
+        let encounterScore = 0;
         for (const group of groups) {
             for (let i = 0; i < group.length; i++) {
                 for (let j = i + 1; j < group.length; j++) {
-                    score += encounterMatrix[group[i]][group[j]];
+                    encounterScore += encounterMatrix[group[i]][group[j]];
                 }
             }
         }
-        return score;
+
+        // Group balance penalty: penalize placing a pilot in a group they've visited more
+        // Uses the difference between the proposed group's visit count and the pilot's minimum visit count
+        let balancePenalty = 0;
+        groups.forEach((group, gIdx) => {
+            for (const pilot of group) {
+                const minVisits = Math.min(...visitCounts[pilot]);
+                const thisVisits = visitCounts[pilot][gIdx];
+                balancePenalty += (thisVisits - minVisits);
+            }
+        });
+
+        // Weight: encounters matter most, balance is a tiebreaker
+        return encounterScore * 100 + balancePenalty;
     }
 
     function distributePilots(pilots, numGroups) {
@@ -177,66 +214,153 @@ Task N (Best flight)</textarea>
         return groups;
     }
 
-    function assignPilotsToGroups(pilots, numGroups, encounterMatrix) {
-        // Try many random distributions, keep the one with lowest repeat-encounter score
-        const attempts = Math.min(2000, Math.max(500, pilots.length * 50));
+    function cloneGroups(groups) {
+        return groups.map(g => [...g]);
+    }
+
+    function hillClimb(groups, encounterMatrix, visitCounts) {
+        // Repeatedly try swapping two pilots from different groups; keep if score improves
+        let bestScore = scoreAssignment(groups, encounterMatrix, visitCounts);
+        let improved = true;
+
+        while (improved) {
+            improved = false;
+            for (let g1 = 0; g1 < groups.length; g1++) {
+                for (let g2 = g1 + 1; g2 < groups.length; g2++) {
+                    for (let i = 0; i < groups[g1].length; i++) {
+                        for (let j = 0; j < groups[g2].length; j++) {
+                            // Swap
+                            [groups[g1][i], groups[g2][j]] = [groups[g2][j], groups[g1][i]];
+                            const newScore = scoreAssignment(groups, encounterMatrix, visitCounts);
+                            if (newScore < bestScore) {
+                                bestScore = newScore;
+                                improved = true;
+                            } else {
+                                // Swap back
+                                [groups[g1][i], groups[g2][j]] = [groups[g2][j], groups[g1][i]];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return groups;
+    }
+
+    function assignPilotsToGroups(pilots, numGroups, encounterMatrix, visitCounts) {
+        const attempts = Math.min(500, Math.max(200, pilots.length * 20));
         let bestGroups = null;
         let bestScore = Infinity;
 
         for (let t = 0; t < attempts; t++) {
             const groups = distributePilots(pilots, numGroups);
-            const score = scoreAssignment(groups, encounterMatrix);
+            const score = scoreAssignment(groups, encounterMatrix, visitCounts);
             if (score < bestScore) {
                 bestScore = score;
-                bestGroups = groups;
+                bestGroups = cloneGroups(groups);
                 if (score === 0) break;
             }
         }
+
+        // Hill-climb from the best random seed
+        bestGroups = hillClimb(bestGroups, encounterMatrix, visitCounts);
         return bestGroups;
     }
 
-    // ── Timer Assignment (mutual cross-group pairs, rotating) ──────────
+    // ── Timer Assignment (backtracking with most-constrained-first) ─────
     function assignTimers(groups, round, previousPairs) {
-        // previousPairs: Set of "A|B" keys (undirected) – tracks pair history across rounds
         const pilotToGroup = {};
         groups.forEach((g, gIdx) => g.forEach(p => { pilotToGroup[p] = gIdx; }));
 
         const allPilots = groups.flat();
-        const paired = new Set();
-        const pairs = [];
-
         function pairKey(a, b) { return [a, b].sort().join('|'); }
 
-        // Shuffle for randomness
-        const shuffled = shuffle(allPilots);
-
-        for (const pilot of shuffled) {
-            if (paired.has(pilot)) continue;
-
-            // Cross-group, unpaired candidates
-            const candidates = shuffled.filter(t =>
-                !paired.has(t) && t !== pilot && pilotToGroup[t] !== pilotToGroup[pilot]
-            );
-
-            // Prefer candidates not yet paired with this pilot in any previous round
-            const preferred = candidates.filter(t => !previousPairs.has(pairKey(pilot, t)));
-
-            const partner = preferred[0] || candidates[0] || null;
-            if (!partner) continue;
-
-            paired.add(pilot);
-            paired.add(partner);
-            pairs.push([pilot, partner]);
-            previousPairs.add(pairKey(pilot, partner));
+        // Build adjacency: for each pilot, list valid cross-group partners
+        const crossGroupPartners = {};
+        for (const p of allPilots) {
+            crossGroupPartners[p] = allPilots.filter(t => t !== p && pilotToGroup[t] !== pilotToGroup[p]);
         }
 
-        // Build assignments: each pair times each other
+        // Backtracking search for maximum matching with minimum repeated pairs
+        // Order pilots by fewest cross-group options first (most-constrained-first)
+        const sortedPilots = [...allPilots].sort((a, b) =>
+            crossGroupPartners[a].length - crossGroupPartners[b].length
+        );
+
+        const maxPairs = Math.floor(allPilots.length / 2);
+        let bestPairs = null;
+        let bestRepeats = Infinity;
+        let nodes = 0;
+        const nodeLimit = 100000;
+
+        function backtrack(idx, paired, pairs, repeats) {
+            if (nodes++ > nodeLimit) return;
+            // Prune: can't beat current best
+            if (repeats >= bestRepeats) return;
+
+            // Skip already-paired pilots
+            while (idx < sortedPilots.length && paired.has(sortedPilots[idx])) idx++;
+
+            if (idx >= sortedPilots.length) {
+                if (pairs.length > (bestPairs ? bestPairs.length : -1) ||
+                    (pairs.length === (bestPairs ? bestPairs.length : -1) && repeats < bestRepeats)) {
+                    bestPairs = [...pairs];
+                    bestRepeats = repeats;
+                }
+                return;
+            }
+
+            const pilot = sortedPilots[idx];
+            const candidates = crossGroupPartners[pilot].filter(t => !paired.has(t));
+
+            // Sort candidates: prefer new pairs, then most-constrained partner
+            candidates.sort((a, b) => {
+                const aRepeat = previousPairs.has(pairKey(pilot, a)) ? 1 : 0;
+                const bRepeat = previousPairs.has(pairKey(pilot, b)) ? 1 : 0;
+                if (aRepeat !== bRepeat) return aRepeat - bRepeat;
+                return crossGroupPartners[a].length - crossGroupPartners[b].length;
+            });
+
+            for (const partner of candidates) {
+                const key = pairKey(pilot, partner);
+                const isRepeat = previousPairs.has(key) ? 1 : 0;
+
+                paired.add(pilot);
+                paired.add(partner);
+                pairs.push([pilot, partner]);
+
+                backtrack(idx + 1, paired, pairs, repeats + isRepeat);
+
+                pairs.pop();
+                paired.delete(pilot);
+                paired.delete(partner);
+
+                // Stop if we found a perfect solution
+                if (bestRepeats === 0 && bestPairs && bestPairs.length === maxPairs) return;
+                if (nodes > nodeLimit) return;
+            }
+
+            // Also try leaving this pilot unpaired (may allow better pairings for others)
+            backtrack(idx + 1, paired, pairs, repeats);
+        }
+
+        backtrack(0, new Set(), [], 0);
+
+        // Update previousPairs with chosen pairs
+        const pairs = bestPairs || [];
+        for (const [a, b] of pairs) {
+            previousPairs.add(pairKey(a, b));
+        }
+
+        // Build assignments
         const assignments = [];
+        const paired = new Set();
         for (const [a, b] of pairs) {
             assignments.push({ group: pilotToGroup[a], pilot: a, timer: b });
             assignments.push({ group: pilotToGroup[b], pilot: b, timer: a });
+            paired.add(a);
+            paired.add(b);
         }
-        // Unpaired pilot (odd count) gets empty timer
         for (const pilot of allPilots) {
             if (!paired.has(pilot)) {
                 assignments.push({ group: pilotToGroup[pilot], pilot, timer: '' });
@@ -310,7 +434,37 @@ Task N (Best flight)</textarea>
         const timerRotation = pilots.map(p => timerCounts[p].size);
         const minTimerVariety = Math.min(...timerRotation);
 
-        return { maxEncounters, totalPossiblePairs, totalNeededPairs, repeatedPairs, minGroupVisits, maxGroupVisits, minTimerVariety };
+        // ── Quality % ──────────────────────────────────────────────────
+        const numTasks = allRounds.length;
+        const groupSize = Math.ceil(pilots.length / numGroups);
+
+        // 1) Encounter score: how close is maxEncounters to the theoretical minimum?
+        //    Each round, a pilot shares a group with (groupSize-1) others.
+        //    Over numTasks rounds that's numTasks*(groupSize-1) "slots" spread over (n-1) other pilots.
+        //    Best possible max = ceil(numTasks * (groupSize-1) / (pilots.length - 1))
+        const idealMaxEncounters = pilots.length > 1
+            ? Math.ceil(numTasks * (groupSize - 1) / (pilots.length - 1))
+            : 1;
+        const encounterScore = maxEncounters > 0
+            ? Math.min(1, idealMaxEncounters / maxEncounters)
+            : 1;
+
+        // 2) Group balance score: ideal spread is 0 or 1 (floor/ceil of rounds/groups)
+        const idealSpread = numTasks % numGroups === 0 ? 0 : 1;
+        const actualSpread = maxGroupVisits - minGroupVisits;
+        const groupScore = actualSpread <= idealSpread
+            ? 1
+            : Math.max(0, 1 - (actualSpread - idealSpread) / numTasks);
+
+        // 3) Timer repeat score: fraction of needed pairs that are unique
+        const timerScore = totalNeededPairs > 0
+            ? 1 - repeatedPairs / totalNeededPairs
+            : 1;
+
+        // Weighted average (encounters 40%, group balance 30%, timers 30%)
+        const qualityPct = Math.round((encounterScore * 0.4 + groupScore * 0.3 + timerScore * 0.3) * 100);
+
+        return { maxEncounters, totalPossiblePairs, totalNeededPairs, repeatedPairs, minGroupVisits, maxGroupVisits, minTimerVariety, qualityPct, encounterScore, groupScore, timerScore };
     }
 
     // ── CSV Export ────────────────────────────────────────────────────────
@@ -361,36 +515,12 @@ Task N (Best flight)</textarea>
     }
 
     function buildRoundsFromGroups(groupsPerRound) {
-        const attempts = 500;
-        let bestRounds = null;
-        let bestRepeats = Infinity;
-
-        for (let t = 0; t < attempts; t++) {
-            const previousPairs = new Set();
-            const allRounds = [];
-            for (let r = 0; r < groupsPerRound.length; r++) {
-                allRounds.push(assignTimers(groupsPerRound[r], r, previousPairs));
-            }
-            // Count repeated pairs
-            const pairCounts = {};
-            for (const round of allRounds) {
-                const roundPairs = new Set();
-                for (const row of round) {
-                    if (!row.timer) continue;
-                    roundPairs.add([row.pilot, row.timer].sort().join('|'));
-                }
-                for (const key of roundPairs) {
-                    pairCounts[key] = (pairCounts[key] || 0) + 1;
-                }
-            }
-            const repeats = Object.values(pairCounts).filter(c => c > 1).length;
-            if (repeats < bestRepeats) {
-                bestRepeats = repeats;
-                bestRounds = allRounds;
-                if (repeats === 0) break;
-            }
+        const previousPairs = new Set();
+        const allRounds = [];
+        for (let r = 0; r < groupsPerRound.length; r++) {
+            allRounds.push(assignTimers(groupsPerRound[r], r, previousPairs));
         }
-        return bestRounds;
+        return allRounds;
     }
 
     function renderCurrentDraw() {
@@ -414,11 +544,13 @@ Task N (Best flight)</textarea>
 
         const selectedTasks = selectTasks(taskList, numTasks);
         const encounterMatrix = createEncounterMatrix(pilots);
+        const visitCounts = createGroupVisitCounts(pilots, numGroups);
         const groupsPerRound = [];
 
         for (let r = 0; r < numTasks; r++) {
-            const groups = assignPilotsToGroups(pilots, numGroups, encounterMatrix);
+            const groups = assignPilotsToGroups(pilots, numGroups, encounterMatrix, visitCounts);
             updateEncounterMatrix(encounterMatrix, groups);
+            updateGroupVisitCounts(visitCounts, groups);
             groupsPerRound.push(groups);
         }
 
@@ -440,10 +572,12 @@ Task N (Best flight)</textarea>
         } else {
             // No existing groups or round count changed – generate pilots & timers too
             const encounterMatrix = createEncounterMatrix(pilots);
+            const visitCounts = createGroupVisitCounts(pilots, numGroups);
             const groupsPerRound = [];
             for (let r = 0; r < numTasks; r++) {
-                const groups = assignPilotsToGroups(pilots, numGroups, encounterMatrix);
+                const groups = assignPilotsToGroups(pilots, numGroups, encounterMatrix, visitCounts);
                 updateEncounterMatrix(encounterMatrix, groups);
+                updateGroupVisitCounts(visitCounts, groups);
                 groupsPerRound.push(groups);
             }
             const allRounds = buildRoundsFromGroups(groupsPerRound);
@@ -463,10 +597,12 @@ Task N (Best flight)</textarea>
         }
 
         const encounterMatrix = createEncounterMatrix(pilots);
+        const visitCounts = createGroupVisitCounts(pilots, numGroups);
         const groupsPerRound = [];
         for (let r = 0; r < numTasks; r++) {
-            const groups = assignPilotsToGroups(pilots, numGroups, encounterMatrix);
+            const groups = assignPilotsToGroups(pilots, numGroups, encounterMatrix, visitCounts);
             updateEncounterMatrix(encounterMatrix, groups);
+            updateGroupVisitCounts(visitCounts, groups);
             groupsPerRound.push(groups);
         }
 
@@ -520,9 +656,24 @@ Task N (Best flight)</textarea>
         });
 
         // Stats section
+        const barColor = stats.qualityPct >= 80 ? '#27ae60' : stats.qualityPct >= 50 ? '#e67e22' : '#e74c3c';
         html += `
         <div class="stats">
             <h3>Draw Quality</h3>
+            <div class="quality-bar">
+                <div class="quality-bar-label">
+                    <span>Overall</span>
+                    <span>${stats.qualityPct}%</span>
+                </div>
+                <div class="quality-bar-track">
+                    <div class="quality-bar-fill" style="width:${stats.qualityPct}%; background:${barColor};"></div>
+                </div>
+            </div>
+            <div class="quality-breakdown">
+                <div class="quality-sub"><div>${Math.round(stats.encounterScore * 100)}%</div><div class="quality-sub-label">Encounters</div></div>
+                <div class="quality-sub"><div>${Math.round(stats.groupScore * 100)}%</div><div class="quality-sub-label">Group Balance</div></div>
+                <div class="quality-sub"><div>${Math.round(stats.timerScore * 100)}%</div><div class="quality-sub-label">Timer Variety</div></div>
+            </div>
             <div class="stats-grid">
                 <div class="stat-item"><span>Pairs (possible / needed / repeated)</span><span>${stats.totalPossiblePairs} / ${stats.totalNeededPairs} / ${stats.repeatedPairs}</span></div>
                 <div class="stat-item"><span>Max times same opponents</span><span>${stats.maxEncounters}</span></div>
