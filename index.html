@@ -110,8 +110,9 @@ Task N (Best flight)</textarea>
         </div>
     </div>
 
+    <input type="file" id="fileInput" accept=".csv" style="display:none" onchange="handleFileImport(event)">
     <div class="action-bar">
-        <button class="btn btn-import" onclick="importDraw()">Import Draw</button>
+        <button class="btn btn-import" onclick="document.getElementById('fileInput').click()">Import Draw</button>
         <button class="btn btn-primary" onclick="generateAll()">Generate All</button>
         <button class="btn btn-tasks" onclick="generateTasks()">Reassign Tasks</button>
         <button class="btn btn-pilots" onclick="generatePilotsAndTimers()">Reassign Pilots &amp; Timers</button>
@@ -500,6 +501,75 @@ Task N (Best flight)</textarea>
         URL.revokeObjectURL(url);
     }
 
+    // ── Import (GliderScore CSV) ─────────────────────────────────────────
+    function handleFileImport(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                parseGliderScoreCSV(e.target.result);
+            } catch (err) {
+                alert('Import failed: ' + err.message);
+            }
+            // Reset file input so the same file can be re-imported
+            event.target.value = '';
+        };
+        reader.readAsText(file);
+    }
+
+    function parseGliderScoreCSV(text) {
+        const lines = text.split(/\r?\n/);
+
+        // Parse data rows: Round;Group;Re-Flight;F3KTask;Name;Freq;Country;Org Rnd
+        const rows = [];
+        for (const line of lines) {
+            const cols = line.split(';');
+            const roundNum = parseInt(cols[0]);
+            const groupNum = parseInt(cols[1]);
+            if (isNaN(roundNum) || isNaN(groupNum)) continue;
+            const task = (cols[3] || '').trim();
+            const name = (cols[4] || '').trim();
+            if (!task || !name) continue;
+            rows.push({ round: roundNum, group: groupNum, task, name });
+        }
+
+        if (rows.length === 0) {
+            throw new Error('No valid data rows found. Expected GliderScore CSV format (semicolon-delimited).');
+        }
+
+        // Extract unique rounds (in order), tasks, pilots, and number of groups
+        const roundNumbers = [...new Set(rows.map(r => r.round))].sort((a, b) => a - b);
+        const selectedTasks = roundNumbers.map(rn => rows.find(r => r.round === rn).task);
+        const pilots = [...new Set(rows.map(r => r.name))];
+        const numGroups = Math.max(...rows.map(r => r.group));
+
+        // Build groupsPerRound
+        const groupsPerRound = [];
+        for (const rn of roundNumbers) {
+            const roundRows = rows.filter(r => r.round === rn);
+            const groups = Array.from({ length: numGroups }, () => []);
+            for (const row of roundRows) {
+                groups[row.group - 1].push(row.name);
+            }
+            groupsPerRound.push(groups);
+        }
+
+        // Assign timers
+        const allRounds = buildRoundsFromGroups(groupsPerRound);
+
+        // Update UI inputs
+        document.getElementById('pilots').value = pilots.join('\n');
+        const taskSet = [...new Set(selectedTasks)];
+        document.getElementById('tasks').value = taskSet.join('\n');
+        document.getElementById('numTasks').value = roundNumbers.length;
+        document.getElementById('numGroups').value = numGroups;
+
+        // Override previous draw
+        lastDrawData = { allRounds, selectedTasks, groupsPerRound };
+        renderCurrentDraw();
+    }
+
     // ── State ────────────────────────────────────────────────────────────
     let lastDrawData = null;   // { allRounds, selectedTasks, groupsPerRound }
     // groupsPerRound[r] = array of groups (each group is an array of pilot names)
@@ -547,11 +617,6 @@ Task N (Best flight)</textarea>
     }
 
     // ── Button handlers ───────────────────────────────────────────────────
-    function importDraw() {
-        // Placeholder – not yet implemented
-        alert('Import functionality coming soon.');
-    }
-
     function generateAll() {
         const inputs = readInputs();
         if (!validate(inputs)) return;
