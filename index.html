@@ -45,7 +45,7 @@
         th { background-color: #f8f9fa; font-weight: 600; }
         tr:nth-child(even) { background-color: #fcfcfc; }
         .group-label { font-weight: bold; color: var(--accent); }
-        .stats { margin-top: 30px; padding: 16px; background: #f8f9fa; border-radius: 8px; border: 1px solid #eee; }
+        .stats { margin-top: 30px; margin-bottom: 30px; padding: 16px; background: #f8f9fa; border-radius: 8px; border: 1px solid #eee; }
         .stats h3 { margin-top: 0; }
         .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 14px; }
         .stat-item { display: flex; justify-content: space-between; padding: 4px 8px; background: white; border-radius: 4px; }
@@ -57,8 +57,20 @@
         .quality-sub { text-align: center; padding: 6px; background: white; border-radius: 4px; }
         .quality-sub-label { font-size: 11px; color: #666; }
 
+        .busy-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.7); display: flex; align-items: center;
+            justify-content: center; z-index: 9999;
+        }
+        .busy-spinner {
+            width: 48px; height: 48px; border: 5px solid #ddd;
+            border-top-color: var(--accent); border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
         @media print {
-            .input-section, .action-bar, h1, .export-bar { display: none; }
+            .input-section, .action-bar, h1, .export-bar, .busy-overlay { display: none; }
             body { background: white; padding: 0; }
             .container { box-shadow: none; max-width: 100%; padding: 10px; }
             .task-card { border: 2px solid #333; break-inside: avoid; }
@@ -551,7 +563,7 @@ Task N (Best flight)</textarea>
         reader.readAsText(file);
     }
 
-    function parseGliderScoreCSV(text) {
+    async function parseGliderScoreCSV(text) {
         const lines = text.split(/\r?\n/);
 
         // Parse data rows: Round;Group;Re-Flight;F3KTask;Name;Freq;Country;Org Rnd
@@ -589,7 +601,9 @@ Task N (Best flight)</textarea>
         }
 
         // Assign timers
-        const allRounds = buildRoundsFromGroups(groupsPerRound);
+        showBusy();
+        const allRounds = await buildRoundsFromGroups(groupsPerRound);
+        hideBusy();
 
         // Update UI inputs
         document.getElementById('pilots').value = pilots.join('\n');
@@ -601,6 +615,20 @@ Task N (Best flight)</textarea>
         // Override previous draw
         lastDrawData = { allRounds, selectedTasks, groupsPerRound };
         renderCurrentDraw();
+    }
+
+    // ── Busy indicator ────────────────────────────────────────────────────
+    function showBusy() {
+        if (document.getElementById('busyOverlay')) return;
+        const el = document.createElement('div');
+        el.id = 'busyOverlay';
+        el.className = 'busy-overlay';
+        el.innerHTML = '<div class="busy-spinner"></div>';
+        document.body.appendChild(el);
+    }
+    function hideBusy() {
+        const el = document.getElementById('busyOverlay');
+        if (el) el.remove();
     }
 
     // ── State ────────────────────────────────────────────────────────────
@@ -667,11 +695,13 @@ Task N (Best flight)</textarea>
         return count;
     }
 
-    function buildRoundsFromGroups(groupsPerRound) {
-        const attempts = pilotTags.size > 0 ? 100 : 1;
+    async function buildRoundsFromGroups(groupsPerRound) {
+        const attempts = pilotTags.size > 0 ? 10000 : 1;
         let bestRounds = null;
         let bestSameTag = Infinity;
         for (let a = 0; a < attempts; a++) {
+            // Yield to the browser every 200 iterations so the spinner can render
+            if (a % 200 === 0) await new Promise(r => setTimeout(r, 0));
             const previousPairs = new Set();
             const allRounds = [];
             for (let r = 0; r < groupsPerRound.length; r++) {
@@ -697,11 +727,12 @@ Task N (Best flight)</textarea>
     }
 
     // ── Button handlers ───────────────────────────────────────────────────
-    function generateAll() {
+    async function generateAll() {
         const inputs = readInputs();
         if (!validate(inputs)) return;
         const { pilots, taskList, numTasks, numGroups } = inputs;
 
+        showBusy();
         const selectedTasks = selectTasks(taskList, numTasks);
         const encounterMatrix = createEncounterMatrix(pilots);
         const visitCounts = createGroupVisitCounts(pilots, numGroups);
@@ -714,16 +745,18 @@ Task N (Best flight)</textarea>
             groupsPerRound.push(groups);
         }
 
-        const allRounds = buildRoundsFromGroups(groupsPerRound);
+        const allRounds = await buildRoundsFromGroups(groupsPerRound);
         lastDrawData = { allRounds, selectedTasks, groupsPerRound };
         renderCurrentDraw();
+        hideBusy();
     }
 
-    function generateTasks() {
+    async function generateTasks() {
         const inputs = readInputs();
         if (!validate(inputs)) return;
         const { pilots, taskList, numTasks, numGroups } = inputs;
 
+        showBusy();
         const selectedTasks = selectTasks(taskList, numTasks);
 
         if (lastDrawData && lastDrawData.groupsPerRound && lastDrawData.groupsPerRound.length === numTasks) {
@@ -740,13 +773,14 @@ Task N (Best flight)</textarea>
                 updateGroupVisitCounts(visitCounts, groups);
                 groupsPerRound.push(groups);
             }
-            const allRounds = buildRoundsFromGroups(groupsPerRound);
+            const allRounds = await buildRoundsFromGroups(groupsPerRound);
             lastDrawData = { allRounds, selectedTasks, groupsPerRound };
         }
         renderCurrentDraw();
+        hideBusy();
     }
 
-    function generatePilotsAndTimers() {
+    async function generatePilotsAndTimers() {
         const inputs = readInputs();
         if (!validate(inputs)) return;
         const { pilots, numTasks, numGroups } = inputs;
@@ -756,6 +790,7 @@ Task N (Best flight)</textarea>
             return;
         }
 
+        showBusy();
         const encounterMatrix = createEncounterMatrix(pilots);
         const visitCounts = createGroupVisitCounts(pilots, numGroups);
         const groupsPerRound = [];
@@ -766,19 +801,21 @@ Task N (Best flight)</textarea>
             groupsPerRound.push(groups);
         }
 
-        const allRounds = buildRoundsFromGroups(groupsPerRound);
+        const allRounds = await buildRoundsFromGroups(groupsPerRound);
         lastDrawData = { ...lastDrawData, allRounds, groupsPerRound };
         renderCurrentDraw();
+        hideBusy();
     }
 
-    function generateTimersOnly() {
+    async function generateTimersOnly() {
         const inputs = readInputs();
         if (!lastDrawData || !lastDrawData.groupsPerRound || !lastDrawData.allRounds) {
             alert('Generate pilots first (use "Generate All" or "Generate Pilots & Timers").');
             return;
         }
 
-        const newRounds = buildRoundsFromGroups(lastDrawData.groupsPerRound);
+        showBusy();
+        const newRounds = await buildRoundsFromGroups(lastDrawData.groupsPerRound);
 
         // Keep existing pilot order, only update the timer column
         const allRounds = lastDrawData.allRounds.map((oldRound, rIdx) => {
@@ -791,6 +828,7 @@ Task N (Best flight)</textarea>
 
         lastDrawData = { ...lastDrawData, allRounds };
         renderCurrentDraw();
+        hideBusy();
     }
 
     function renderOutput(allRounds, selectedTasks, stats, numGroups) {
@@ -801,24 +839,9 @@ Task N (Best flight)</textarea>
             </div>`;
 
         // Stats section (shown before rounds so it's visible without scrolling)
-        const barColor = stats.qualityPct >= 80 ? '#27ae60' : stats.qualityPct >= 50 ? '#e67e22' : '#e74c3c';
         html += `
         <div class="stats">
-            <h3>Draw Quality</h3>
-            <div class="quality-bar">
-                <div class="quality-bar-label">
-                    <span>Overall</span>
-                    <span>${stats.qualityPct}%</span>
-                </div>
-                <div class="quality-bar-track">
-                    <div class="quality-bar-fill" style="width:${stats.qualityPct}%; background:${barColor};"></div>
-                </div>
-            </div>
-            <div class="quality-breakdown">
-                <div class="quality-sub"><div>${Math.round(stats.encounterScore * 100)}%</div><div class="quality-sub-label">Encounters</div></div>
-                <div class="quality-sub"><div>${Math.round(stats.groupScore * 100)}%</div><div class="quality-sub-label">Group Balance</div></div>
-                <div class="quality-sub"><div>${Math.round(stats.timerScore * 100)}%</div><div class="quality-sub-label">Timer Variety</div></div>
-            </div>
+            <h3>Draw Statistics</h3>
             <div class="stats-grid">
                 <div class="stat-item"><span>Pairs (possible / needed / repeated)</span><span>${stats.totalPossiblePairs} / ${stats.totalNeededPairs} / ${stats.repeatedPairs}</span></div>
                 <div class="stat-item"><span>Max times same opponents</span><span>${stats.maxEncounters}</span></div>
