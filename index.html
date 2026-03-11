@@ -70,11 +70,15 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         @media print {
+            @page { size: landscape; }
             .input-section, .action-bar, h1, .export-bar, .busy-overlay { display: none; }
-            body { background: white; padding: 0; }
-            .container { box-shadow: none; max-width: 100%; padding: 10px; }
-            .task-card { border: 2px solid #333; break-inside: avoid; }
-            .stats { break-before: page; }
+            .stats { display: none; }
+            body { background: white; padding: 0; font-size: 10px; }
+            .container { box-shadow: none; max-width: 100%; padding: 4px; }
+            .draw-results { columns: 3; column-gap: 8px; margin-top: 4px; }
+            .task-card { border: 2px solid #333; break-inside: avoid; margin-bottom: 6px; }
+            .task-header { padding: 4px 8px; font-size: 11px; }
+            th, td { padding: 2px 6px; font-size: 10px; }
         }
     </style>
 </head>
